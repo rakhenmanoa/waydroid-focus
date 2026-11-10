@@ -33,6 +33,13 @@ Le script demande `sudo` (shell Waydroid, fréquence GPU). Pour mesurer l'effet 
     mkdir -p ~/.config/waydroid-focus
     cp disable.list.example ~/.config/waydroid-focus/disable.list   # puis l'éditer
 
+Pour ne rien avoir à lister, `--bg` désactive d'un coup **toutes les applis tierces** installées
+dans Android (sauf l'appli lancée) ; `--keep-app PAQUET` en épargne certaines :
+
+    ./waydroid-focus --list-bg                       # ce qui tourne en ce moment dans Android
+    ./waydroid-focus --bg guitartuna
+    ./waydroid-focus --bg --keep-app org.fdroid.fdroid guitartuna
+
 Les paquets listés dans `~/.config/waydroid-focus/disable.list` (un par ligne) sont arrêtés
 puis désactivés (`pm disable-user`) pendant l'appli, et réactivés à la fermeture.
 

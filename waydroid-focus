@@ -29,7 +29,9 @@ STOP=0
 KEEP_EXTRA=()
 DISABLE=()
 NODISABLE=0
-MODE=run # run | list | restore
+BG=0
+KEEPAPP=()
+MODE=run # run | list | listbg | restore
 ROOT="${WF_ROOT:-}" # préfixe de /proc et /sys, pour les tests uniquement
 
 # Applis Android à désactiver : fichier de config (un paquet par ligne, # = commentaire)
@@ -56,9 +58,13 @@ Options :
   --size LxH         change la résolution Android pendant l'appli (ex. 720x1560)
   --keep REGEX       nom de processus supplémentaire à ne jamais geler (répétable)
   --disable PAQUET   désactive cette appli Android pendant l'appli (répétable)
+  --bg               désactive automatiquement toutes les applis Android tierces
+                     (sauf l'appli lancée et les paquets protégés)
+  --keep-app PAQUET  appli à ne pas désactiver avec --bg (répétable)
   --no-disable       n'en désactive aucune (ignore aussi le fichier de config)
   --stop             arrête la session Waydroid quand l'appli se ferme
   --list             liste les applis installées dans Android (pour choisir quoi désactiver)
+  --list-bg          liste les applis Android qui tournent en ce moment (arrière-plan compris)
   --restore          réactive les applis désactivées par une session interrompue
   -h, --help         cette aide
 
@@ -89,6 +95,13 @@ while (($#)); do
   --stop) STOP=1 ;;
   --no-disable) NODISABLE=1 ;;
   --list) MODE=list ;;
+  --list-bg) MODE=listbg ;;
+  --bg) BG=1 ;;
+  --keep-app)
+    shift
+    [[ ${1:-} =~ ^[A-Za-z0-9_.]+$ ]] || die "--keep-app attend un nom de paquet (voir --list)"
+    KEEPAPP+=("$1")
+    ;;
   --restore) MODE=restore ;;
   --disable)
     shift
@@ -281,14 +294,46 @@ enable_apps() {
   say "Applis Android réactivées : $n."
 }
 
+# Applis Android qui ont un processus en ce moment (arrière-plan compris).
+list_bg() {
+  local installed third name seen=" "
+  local t=() s=()
+  installed=$'\n'$(pkg_list)$'\n'
+  third=$'\n'$(pkg_list -3)$'\n'
+  while read -r name; do
+    name=${name%%:*}
+    [[ $installed == *$'\n'"$name"$'\n'* ]] || continue
+    [[ $seen == *" $name "* ]] && continue
+    seen+="$name "
+    if [[ $third == *$'\n'"$name"$'\n'* ]]; then t+=("$name"); else s+=("$name"); fi
+  done < <(wsh "ps -A" | tr -d '\r' | awk 'NR>1 {print $NF}')
+  say "Applis tierces en cours d'exécution :"
+  if ((${#t[@]})); then printf '  %s\n' "${t[@]}" | sort; else say "  (aucune)"; fi
+  say ""
+  say "Applis système en cours d'exécution :"
+  if ((${#s[@]})); then printf '  %s\n' "${s[@]}" | sort; else say "  (aucune)"; fi
+  say ""
+  say "--bg désactive toutes les applis tierces ; pour des applis système, ajoute-les à"
+  say "$CONF_FILE ou utilise --disable PAQUET."
+}
+
 disable_apps() {
-  local want=() pkg line
+  local want=() pkg line k
   [[ -r $CONF_FILE ]] && while IFS= read -r line; do
     line=${line%%#*}
     line=${line//[[:space:]]/}
     [[ -n $line ]] && want+=("$line")
   done <"$CONF_FILE"
   want+=("${DISABLE[@]}")
+  if ((BG)); then
+    if ((DRY)); then
+      say "  [dry-run] --bg : toutes les applis tierces installées seraient désactivées"
+    else
+      while IFS= read -r pkg; do
+        [[ -n $pkg ]] && want+=("$pkg")
+      done < <(pkg_list -3)
+    fi
+  fi
   ((${#want[@]})) || return 0
 
   local installed disabled ok=()
@@ -303,6 +348,9 @@ disable_apps() {
   for pkg in "${want[@]}"; do
     [[ -n ${seen[$pkg]:-} ]] && continue
     seen[$pkg]=1
+    for k in "${KEEPAPP[@]}"; do
+      [[ $pkg == "$k" ]] && continue 2
+    done
     if [[ $pkg == "$PKG" ]]; then
       warn "$pkg est l'appli lancée : ignorée"
       continue
@@ -413,6 +461,10 @@ if [[ $MODE != run ]]; then
   RESTORED=1 # rien à restaurer à la sortie dans ces modes
   ((DRY)) && die "--dry-run ne s'utilise pas avec --list ni --restore"
   wsh_detect || die "shell Waydroid inaccessible"
+  if [[ $MODE == listbg ]]; then
+    list_bg
+    exit 0
+  fi
   if [[ $MODE == list ]]; then
     say "Applis tierces (installées par toi) :"
     pkg_list -3 | sort | sed 's/^/  /'
