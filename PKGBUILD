@@ -19,6 +19,7 @@ pkgver() {
 package() {
   cd "$srcdir/$pkgname"
   install -Dm755 waydroid-focus "$pkgdir/usr/bin/waydroid-focus"
+  install -Dm644 disable.list.example "$pkgdir/usr/share/doc/$pkgname/disable.list.example"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

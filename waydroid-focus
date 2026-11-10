@@ -8,7 +8,9 @@
 #   1. gèle (SIGSTOP) les autres processus de l'utilisateur qui utilisent le GPU
 #      (Firefox, etc.), sauf le bureau, le terminal et Waydroid ;
 #   2. côté Android : coupe les animations système et tue les applis en cache ;
-#   3. en option : réduit la résolution (--size) et plafonne la fréquence max du
+#   3. côté Android : désactive temporairement les applis inutiles que tu as
+#      choisies (--disable PAQUET, ou le fichier de config, voir --list) ;
+#   4. en option : réduit la résolution (--size) et plafonne la fréquence max du
 #      GPU (--gpu-max).
 # À la fermeture de l'appli, ou sur Ctrl+C, tout est restauré.
 #
@@ -25,7 +27,17 @@ GPUMAX=""
 SIZE=""
 STOP=0
 KEEP_EXTRA=()
+DISABLE=()
+NODISABLE=0
+MODE=run # run | list | restore
 ROOT="${WF_ROOT:-}" # préfixe de /proc et /sys, pour les tests uniquement
+
+# Applis Android à désactiver : fichier de config (un paquet par ligne, # = commentaire)
+CONF_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/waydroid-focus/disable.list"
+# Paquets désactivés par nous : permet de tout réactiver même après un plantage
+STATE_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/waydroid-focus/disabled.list"
+# Paquets qu'on refuse de désactiver, quoi qu'on demande
+PROTECT_RE='^(android|com\.android\.(systemui|providers\..*|inputmethod\..*|permissioncontroller|shell|webview)|com\.google\.android\.webview)$|waydro'
 
 # Processus jamais gelés (nom de commande, regex étendue).
 KEEP_RE='^(kwin|plasma|startplasma|Xwayland|waydroid|lxc|sddm|systemd|pipewire|wireplumber|dbus|kded|ksmserver|kscreen|powerdevil|kglobalaccel|maliit|squeekboard|xdg-|polkit|bash$|sh$|zsh$|fish$|sudo$)'
@@ -43,8 +55,17 @@ Options :
   --gpu-max MHZ      plafonne la fréquence max du GPU pendant l'appli (ex. 500)
   --size LxH         change la résolution Android pendant l'appli (ex. 720x1560)
   --keep REGEX       nom de processus supplémentaire à ne jamais geler (répétable)
+  --disable PAQUET   désactive cette appli Android pendant l'appli (répétable)
+  --no-disable       n'en désactive aucune (ignore aussi le fichier de config)
   --stop             arrête la session Waydroid quand l'appli se ferme
+  --list             liste les applis installées dans Android (pour choisir quoi désactiver)
+  --restore          réactive les applis désactivées par une session interrompue
   -h, --help         cette aide
+
+Fichier de config des applis à désactiver (un paquet par ligne) :
+  ~/.config/waydroid-focus/disable.list
+Les applis désactivées sont toujours réactivées à la fermeture, sur Ctrl+C, ou au
+prochain lancement si la session avait été interrompue brutalement.
 EOF
 }
 
@@ -66,6 +87,14 @@ while (($#)); do
   --no-freeze) FREEZE=0 ;;
   --no-android) ANDROID=0 ;;
   --stop) STOP=1 ;;
+  --no-disable) NODISABLE=1 ;;
+  --list) MODE=list ;;
+  --restore) MODE=restore ;;
+  --disable)
+    shift
+    [[ ${1:-} =~ ^[A-Za-z0-9_.]+$ ]] || die "--disable attend un nom de paquet (voir --list)"
+    DISABLE+=("$1")
+    ;;
   --gpu-max)
     shift
     [[ ${1:-} =~ ^[0-9]+$ ]] || die "--gpu-max attend une valeur en MHz"
@@ -90,10 +119,10 @@ while (($#)); do
   shift
 done
 
-[[ -n $PKG ]] || {
+if [[ $MODE == run && -z $PKG ]]; then
   usage
   exit 2
-}
+fi
 case $PKG in
 guitartuna | guitar-tuna) PKG=com.ovelin.guitartuna ;;
 esac
@@ -205,6 +234,8 @@ android_apply() {
     SAVED_ANIM[$k]=${v:-null}
     wsh "settings put global $k 0"
   done
+  enable_apps # reste éventuel d'une session interrompue
+  ((NODISABLE)) || disable_apps
   wsh "am kill-all"
   if [[ -n $SIZE ]]; then
     wsh "wm size $SIZE"
@@ -224,6 +255,82 @@ android_restore() {
   done
   ((SIZE_CHANGED)) && wsh "wm size reset"
   ANDROID_DONE=0
+}
+
+# ------------------------------------------------- applis Android à désactiver
+# pkg_list [option] : noms de paquets, un par ligne (sans "package:" ni \r)
+pkg_list() {
+  wsh "pm list packages $*" 2>/dev/null | tr -d '\r' | sed -n 's/^package://p'
+}
+
+# Réactive tout ce que nous avons désactivé (suivi dans STATE_FILE).
+enable_apps() {
+  [[ -s $STATE_FILE ]] || return 0
+  if [[ -z $WSH_MODE ]] && ! ((DRY)); then
+    wsh_detect || {
+      warn "shell Waydroid inaccessible : applis non réactivées (voir $STATE_FILE, puis --restore)"
+      return 0
+    }
+  fi
+  local pkg n=0
+  while read -r pkg; do
+    [[ -n $pkg ]] || continue
+    wsh "pm enable $pkg" >/dev/null && n=$((n + 1))
+  done <"$STATE_FILE"
+  ((DRY)) || rm -f "$STATE_FILE"
+  say "Applis Android réactivées : $n."
+}
+
+disable_apps() {
+  local want=() pkg line
+  [[ -r $CONF_FILE ]] && while IFS= read -r line; do
+    line=${line%%#*}
+    line=${line//[[:space:]]/}
+    [[ -n $line ]] && want+=("$line")
+  done <"$CONF_FILE"
+  want+=("${DISABLE[@]}")
+  ((${#want[@]})) || return 0
+
+  local installed disabled ok=()
+  if ((DRY)); then
+    installed=""
+    disabled=""
+  else
+    installed=$'\n'$(pkg_list)$'\n'
+    disabled=$'\n'$(pkg_list -d)$'\n'
+  fi
+  declare -A seen=()
+  for pkg in "${want[@]}"; do
+    [[ -n ${seen[$pkg]:-} ]] && continue
+    seen[$pkg]=1
+    if [[ $pkg == "$PKG" ]]; then
+      warn "$pkg est l'appli lancée : ignorée"
+      continue
+    fi
+    if [[ $pkg =~ $PROTECT_RE ]]; then
+      warn "$pkg est protégée : ignorée"
+      continue
+    fi
+    if ! ((DRY)); then
+      [[ $installed == *$'\n'"$pkg"$'\n'* ]] || {
+        warn "$pkg n'est pas installée : ignorée"
+        continue
+      }
+      [[ $disabled == *$'\n'"$pkg"$'\n'* ]] && continue # déjà désactivée avant nous
+    fi
+    ok+=("$pkg")
+  done
+  ((${#ok[@]})) || return 0
+
+  if ! ((DRY)); then
+    mkdir -p "$(dirname "$STATE_FILE")"
+  fi
+  for pkg in "${ok[@]}"; do
+    # on note d'abord, pour pouvoir réactiver même si on est tué entre-temps
+    ((DRY)) || echo "$pkg" >>"$STATE_FILE"
+    wsh "am force-stop $pkg; pm disable-user --user 0 $pkg" >/dev/null
+  done
+  say "Applis Android désactivées : ${ok[*]}"
 }
 
 # -------------------------------------------------------------------- GPU
@@ -272,6 +379,7 @@ restore() {
   ((RESTORED)) && return
   RESTORED=1
   thaw_others
+  enable_apps
   android_restore
   gpu_restore
   if ((STOP)) && ! ((DRY)); then
@@ -298,6 +406,30 @@ if ! ((DRY)); then
     done
     session_running || die "la session Waydroid ne démarre pas"
   fi
+fi
+
+# ------------------------------------------------------- --list et --restore
+if [[ $MODE != run ]]; then
+  RESTORED=1 # rien à restaurer à la sortie dans ces modes
+  ((DRY)) && die "--dry-run ne s'utilise pas avec --list ni --restore"
+  wsh_detect || die "shell Waydroid inaccessible"
+  if [[ $MODE == list ]]; then
+    say "Applis tierces (installées par toi) :"
+    pkg_list -3 | sort | sed 's/^/  /'
+    say ""
+    say "Applis système :"
+    pkg_list -s | sort | sed 's/^/  /'
+    say ""
+    say "Pour en désactiver pendant une appli : --disable PAQUET, ou un paquet par ligne dans"
+    say "$CONF_FILE"
+  else
+    if [[ -s $STATE_FILE ]]; then
+      enable_apps
+    else
+      say "Rien à réactiver."
+    fi
+  fi
+  exit 0
 fi
 
 # ------------------------------------------------------------------ application

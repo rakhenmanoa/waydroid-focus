@@ -1,0 +1,7 @@
+# Applis Android à désactiver pendant qu'une appli tourne (un paquet par ligne).
+# Copie ce fichier vers ~/.config/waydroid-focus/disable.list puis adapte-le.
+# Les noms de paquets s'obtiennent avec : waydroid-focus --list
+#
+# Exemples (à remplacer par les applis réellement inutiles chez toi) :
+# com.example.app_inutile
+# com.android.calendar
