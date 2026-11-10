@@ -30,6 +30,7 @@ KEEP_EXTRA=()
 DISABLE=()
 NODISABLE=0
 BG=0
+BGSYS=0
 KEEPAPP=()
 MODE=run # run | list | listbg | restore
 ROOT="${WF_ROOT:-}" # préfixe de /proc et /sys, pour les tests uniquement
@@ -38,8 +39,24 @@ ROOT="${WF_ROOT:-}" # préfixe de /proc et /sys, pour les tests uniquement
 CONF_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/waydroid-focus/disable.list"
 # Paquets désactivés par nous : permet de tout réactiver même après un plantage
 STATE_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/waydroid-focus/disabled.list"
-# Paquets qu'on refuse de désactiver, quoi qu'on demande
-PROTECT_RE='^(android|com\.android\.(systemui|providers\..*|inputmethod\..*|permissioncontroller|shell|webview)|com\.google\.android\.webview)$|waydro'
+# Paquets qu'on refuse de désactiver, quoi qu'on demande : désactiver l'un d'eux
+# casse la session Waydroid, la saisie ou l'affichage. La liste s'ajoute à celle
+# calculée au vol (clavier et lanceur réellement en service, voir dynamic_protect).
+PROTECT_RE='waydro'                                 # tout ce qui touche à Waydroid
+PROTECT_RE+='|^android$'                            # le framework lui-même
+PROTECT_RE+='|^com\.android\.systemui'              # barre d'état, navigation
+PROTECT_RE+='|^com\.android\.shell$'                # c'est par là qu'on passe
+PROTECT_RE+='|^com\.android\.providers\.'           # réglages, médias, téléchargements
+PROTECT_RE+='|^com\.android\.permissioncontroller$' # permissions
+PROTECT_RE+='|^com\.android\.packageinstaller$|^com\.google\.android\.packageinstaller$'
+PROTECT_RE+='|^com\.android\.externalstorage$|^com\.android\.documentsui$'
+PROTECT_RE+='|^com\.android\.keychain$|^com\.android\.se$'
+PROTECT_RE+='|^com\.android\.networkstack|^com\.android\.captiveportallogin$'
+PROTECT_RE+='|webview|^com\.android\.htmlviewer$'   # moteur web partagé
+PROTECT_RE+='|inputmethod|keyboard|\.ime$'          # claviers
+PROTECT_RE+='|^com\.android\.launcher|trebuchet'    # écran d'accueil
+PROTECT_RE+='|^com\.google\.android\.gms$|^com\.google\.android\.gsf$'
+PROTECT_RE+='|setupwizard|^org\.lineageos\.lineageparts$'
 
 # Processus jamais gelés (nom de commande, regex étendue).
 KEEP_RE='^(kwin|plasma|startplasma|Xwayland|waydroid|lxc|sddm|systemd|pipewire|wireplumber|dbus|kded|ksmserver|kscreen|powerdevil|kglobalaccel|maliit|squeekboard|xdg-|polkit|bash$|sh$|zsh$|fish$|sudo$)'
@@ -60,7 +77,9 @@ Options :
   --disable PAQUET   désactive cette appli Android pendant l'appli (répétable)
   --bg               désactive automatiquement toutes les applis Android tierces
                      (sauf l'appli lancée et les paquets protégés)
-  --keep-app PAQUET  appli à ne pas désactiver avec --bg (répétable)
+  --bg-system        comme --bg, mais inclut aussi les applis système non essentielles
+                     (à essayer d'abord avec -n ; voir l'avertissement du README)
+  --keep-app PAQUET  appli à ne pas désactiver avec --bg/--bg-system (répétable)
   --no-disable       n'en désactive aucune (ignore aussi le fichier de config)
   --stop             arrête la session Waydroid quand l'appli se ferme
   --list             liste les applis installées dans Android (pour choisir quoi désactiver)
@@ -97,6 +116,10 @@ while (($#)); do
   --list) MODE=list ;;
   --list-bg) MODE=listbg ;;
   --bg) BG=1 ;;
+  --bg-system)
+    BG=1
+    BGSYS=1
+    ;;
   --keep-app)
     shift
     [[ ${1:-} =~ ^[A-Za-z0-9_.]+$ ]] || die "--keep-app attend un nom de paquet (voir --list)"
@@ -165,6 +188,12 @@ wsh() {
     say "  [dry-run] (android) $1" >&2
     return 0
   fi
+  wsh_ro "$1"
+}
+
+# wsh_ro "commande android" : idem, pour une commande qui ne modifie rien.
+# Exécutée même en dry-run, afin que --dry-run affiche la vraie liste de paquets.
+wsh_ro() {
   case $WSH_MODE in
   dashdash) sudo waydroid shell -- sh -c "$1" </dev/null ;;
   plain) sudo waydroid shell sh -c "$1" </dev/null ;;
@@ -238,9 +267,13 @@ thaw_others() {
 # ------------------------------------------------------------ côté Android
 android_apply() {
   local k v
-  if ! ((DRY)) && ! wsh_detect; then
-    warn "shell Waydroid inaccessible : réglages Android ignorés"
-    return
+  if [[ -z $WSH_MODE ]] && ! wsh_detect; then
+    if ((DRY)); then
+      warn "shell Waydroid inaccessible : la liste des applis ne peut pas être vérifiée"
+    else
+      warn "shell Waydroid inaccessible : réglages Android ignorés"
+      return
+    fi
   fi
   for k in "${ANIMS[@]}"; do
     v=$(wsh "settings get global $k" | tr -d '\r')
@@ -273,7 +306,20 @@ android_restore() {
 # ------------------------------------------------- applis Android à désactiver
 # pkg_list [option] : noms de paquets, un par ligne (sans "package:" ni \r)
 pkg_list() {
-  wsh "pm list packages $*" 2>/dev/null | tr -d '\r' | sed -n 's/^package://p'
+  wsh_ro "pm list packages $*" 2>/dev/null | tr -d '\r' | sed -n 's/^package://p'
+}
+
+# Paquets à protéger en plus : le clavier et le lanceur réellement en service.
+DYN_PROTECT=" "
+dynamic_protect() {
+  local out pkg
+  out=$(wsh_ro "settings get secure default_input_method" 2>/dev/null | tr -d '\r')
+  pkg=${out%%/*}
+  [[ $pkg =~ ^[A-Za-z0-9_.]+$ ]] && DYN_PROTECT+="$pkg "
+  out=$(wsh_ro "cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME" 2>/dev/null | tr -d '\r' | tail -1)
+  pkg=${out%%/*}
+  [[ $pkg =~ ^[A-Za-z0-9_.]+$ ]] && DYN_PROTECT+="$pkg "
+  [[ $DYN_PROTECT == "  " ]] || say "Protégés d'office (clavier, accueil) :$DYN_PROTECT"
 }
 
 # Réactive tout ce que nous avons désactivé (suivi dans STATE_FILE).
@@ -313,36 +359,42 @@ list_bg() {
   say "Applis système en cours d'exécution :"
   if ((${#s[@]})); then printf '  %s\n' "${s[@]}" | sort; else say "  (aucune)"; fi
   say ""
-  say "--bg désactive toutes les applis tierces ; pour des applis système, ajoute-les à"
-  say "$CONF_FILE ou utilise --disable PAQUET."
+  say "--bg désactive les applis tierces, --bg-system y ajoute les applis système non"
+  say "essentielles (essaie d'abord avec -n). Liste figée : $CONF_FILE"
 }
 
 disable_apps() {
   local want=() pkg line k
+  declare -A explicit=() # demandé nommément : on explique pourquoi on refuse
   [[ -r $CONF_FILE ]] && while IFS= read -r line; do
     line=${line%%#*}
     line=${line//[[:space:]]/}
-    [[ -n $line ]] && want+=("$line")
+    [[ -n $line ]] && want+=("$line") && explicit[$line]=1
   done <"$CONF_FILE"
-  want+=("${DISABLE[@]}")
+  for pkg in "${DISABLE[@]}"; do
+    want+=("$pkg")
+    explicit[$pkg]=1
+  done
   if ((BG)); then
-    if ((DRY)); then
-      say "  [dry-run] --bg : toutes les applis tierces installées seraient désactivées"
-    else
+    dynamic_protect
+    while IFS= read -r pkg; do
+      [[ -n $pkg ]] && want+=("$pkg")
+    done < <(pkg_list -3)
+    if ((BGSYS)); then
       while IFS= read -r pkg; do
         [[ -n $pkg ]] && want+=("$pkg")
-      done < <(pkg_list -3)
+      done < <(pkg_list -s)
     fi
   fi
   ((${#want[@]})) || return 0
 
   local installed disabled ok=()
-  if ((DRY)); then
-    installed=""
-    disabled=""
-  else
+  if [[ -n $WSH_MODE ]]; then
     installed=$'\n'$(pkg_list)$'\n'
     disabled=$'\n'$(pkg_list -d)$'\n'
+  else
+    installed=""
+    disabled=""
   fi
   declare -A seen=()
   for pkg in "${want[@]}"; do
@@ -351,34 +403,51 @@ disable_apps() {
     for k in "${KEEPAPP[@]}"; do
       [[ $pkg == "$k" ]] && continue 2
     done
+    [[ $DYN_PROTECT == *" $pkg "* ]] && continue
     if [[ $pkg == "$PKG" ]]; then
-      warn "$pkg est l'appli lancée : ignorée"
+      [[ -n ${explicit[$pkg]:-} ]] && warn "$pkg est l'appli lancée : ignorée"
       continue
     fi
     if [[ $pkg =~ $PROTECT_RE ]]; then
-      warn "$pkg est protégée : ignorée"
+      # avec --bg/--bg-system la liste vient de pm : on ne commente que l'explicite
+      [[ -n ${explicit[$pkg]:-} ]] && warn "$pkg est protégée : ignorée"
       continue
     fi
-    if ! ((DRY)); then
+    if [[ -n $installed ]]; then
       [[ $installed == *$'\n'"$pkg"$'\n'* ]] || {
-        warn "$pkg n'est pas installée : ignorée"
+        [[ -n ${explicit[$pkg]:-} ]] && warn "$pkg n'est pas installée : ignorée"
         continue
       }
       [[ $disabled == *$'\n'"$pkg"$'\n'* ]] && continue # déjà désactivée avant nous
     fi
     ok+=("$pkg")
   done
-  ((${#ok[@]})) || return 0
+  ((${#ok[@]})) || {
+    say "Aucune appli Android à désactiver."
+    return 0
+  }
 
-  if ! ((DRY)); then
-    mkdir -p "$(dirname "$STATE_FILE")"
+  if ((DRY)); then
+    say "  [dry-run] ${#ok[@]} appli(s) seraient désactivées : ${ok[*]}"
+    return 0
   fi
+  mkdir -p "$(dirname "$STATE_FILE")"
+  local out done=() failed=()
   for pkg in "${ok[@]}"; do
     # on note d'abord, pour pouvoir réactiver même si on est tué entre-temps
-    ((DRY)) || echo "$pkg" >>"$STATE_FILE"
-    wsh "am force-stop $pkg; pm disable-user --user 0 $pkg" >/dev/null
+    echo "$pkg" >>"$STATE_FILE"
+    out=$(wsh "am force-stop $pkg; pm disable-user --user 0 $pkg" 2>&1)
+    if [[ $out == *"new state: disabled"* || $out == *disabled-user* || -z $out ]]; then
+      done+=("$pkg")
+    else
+      failed+=("$pkg") # Android refuse : paquet non désactivable, rien n'a changé
+      grep -vxF "$pkg" "$STATE_FILE" >"$STATE_FILE.n" 2>/dev/null &&
+        mv "$STATE_FILE.n" "$STATE_FILE"
+    fi
   done
-  say "Applis Android désactivées : ${ok[*]}"
+  say "Applis Android désactivées (${#done[@]}) : ${done[*]:-aucune}"
+  ((${#failed[@]})) && say "Non désactivables, laissées telles quelles : ${failed[*]}"
+  return 0
 }
 
 # -------------------------------------------------------------------- GPU
@@ -443,7 +512,10 @@ session_running() {
   waydroid status 2>/dev/null | grep -q 'Session:.*RUNNING'
 }
 
-if ! ((DRY)); then
+if ((DRY)); then
+  # en simulation on ne modifie rien, mais on lit la liste des paquets : sudo requis
+  sudo -v || warn "sans sudo, la liste des applis ne pourra pas être lue"
+else
   sudo -v || die "sudo est nécessaire (shell Waydroid, fréquence GPU)"
   if ! session_running; then
     say "Démarrage de la session Waydroid…"
@@ -455,6 +527,7 @@ if ! ((DRY)); then
     session_running || die "la session Waydroid ne démarre pas"
   fi
 fi
+((DRY)) && wsh_detect >/dev/null 2>&1
 
 # ------------------------------------------------------- --list et --restore
 if [[ $MODE != run ]]; then

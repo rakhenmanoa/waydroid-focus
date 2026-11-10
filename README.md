@@ -34,11 +34,24 @@ Le script demande `sudo` (shell Waydroid, fréquence GPU). Pour mesurer l'effet 
     cp disable.list.example ~/.config/waydroid-focus/disable.list   # puis l'éditer
 
 Pour ne rien avoir à lister, `--bg` désactive d'un coup **toutes les applis tierces** installées
-dans Android (sauf l'appli lancée) ; `--keep-app PAQUET` en épargne certaines :
+dans Android, et `--bg-system` y ajoute les **applis système non essentielles**.
+`--keep-app PAQUET` en épargne certaines :
 
     ./waydroid-focus --list-bg                       # ce qui tourne en ce moment dans Android
-    ./waydroid-focus --bg guitartuna
-    ./waydroid-focus --bg --keep-app org.fdroid.fdroid guitartuna
+    ./waydroid-focus -n --bg-system guitartuna       # simulation : liste exactement ce qui serait coupé
+    ./waydroid-focus --bg-system guitartuna
+    ./waydroid-focus --bg-system --keep-app org.fdroid.fdroid guitartuna
+
+Avec `--bg-system`, ces paquets ne sont jamais touchés, car les désactiver casse la session,
+la saisie ou l'affichage : le framework `android`, SystemUI, le shell, les `providers`,
+le contrôleur de permissions, l'installeur de paquets, le stockage, la WebView, les claviers,
+l'écran d'accueil, les services Google de base, et tout ce qui touche à Waydroid. Le clavier
+et le lanceur réellement en service sont en plus détectés au lancement et protégés.
+Une appli qu'Android refuse de désactiver est signalée et laissée telle quelle.
+
+**Prudence quand même.** `--bg-system` peut faire disparaître des fonctions dont GuitarTuna
+ou Android dépendent (réseau, notifications, partage). Lance d'abord `-n` pour voir la liste,
+et garde à l'esprit que `--restore` remet tout en place.
 
 Les paquets listés dans `~/.config/waydroid-focus/disable.list` (un par ligne) sont arrêtés
 puis désactivés (`pm disable-user`) pendant l'appli, et réactivés à la fermeture.
