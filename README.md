@@ -12,14 +12,15 @@ sous Linux avec le pilote DRM msm, mais utilisable sur toute machine où Waydroi
 
 Tant que l'appli tourne :
 
-- les autres processus de l'utilisateur qui utilisent le GPU (Firefox, etc.) sont gelés (SIGSTOP),
-  sauf le bureau, le terminal et Waydroid (`--keep REGEX` pour en protéger d'autres,
-  `--no-freeze` pour désactiver) ;
 - côté Android, les animations sont coupées et les applis en cache arrêtées (`--no-android`
   pour désactiver) ;
 - les applis Android inutiles que tu as choisies sont désactivées (voir plus bas) ;
 - en option, la résolution est réduite (`--size LxH`) et la fréquence max du GPU plafonnée
   (`--gpu-max MHZ`).
+
+Par défaut, rien n'est touché côté Linux : seul Waydroid est concerné. `--freeze` gèle en plus
+(SIGSTOP) les processus de l'hôte qui utilisent le GPU, sauf le bureau, le terminal et Waydroid
+(`--keep REGEX` pour en protéger d'autres).
 
 Tout est restauré à la fermeture de l'appli ou sur Ctrl+C. `--stop` arrête aussi la session Waydroid.
 

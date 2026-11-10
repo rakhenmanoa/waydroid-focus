@@ -4,9 +4,9 @@
 # waydroid-focus — lance une appli Android dans Waydroid en libérant le GPU et le
 # CPU pour elle, puis remet tout comme avant quand elle se ferme.
 #
-# Pendant que l'appli tourne :
-#   1. gèle (SIGSTOP) les autres processus de l'utilisateur qui utilisent le GPU
-#      (Firefox, etc.), sauf le bureau, le terminal et Waydroid ;
+# Pendant que l'appli tourne, côté Waydroid uniquement par défaut :
+#   1. avec --freeze seulement : gèle (SIGSTOP) les processus Linux de l'hôte qui
+#      utilisent le GPU (Firefox, etc.), sauf le bureau, le terminal et Waydroid ;
 #   2. côté Android : coupe les animations système et tue les applis en cache ;
 #   3. côté Android : désactive temporairement les applis inutiles que tu as
 #      choisies (--disable PAQUET, ou le fichier de config, voir --list) ;
@@ -21,7 +21,7 @@ set -u
 
 PKG=""
 DRY=0
-FREEZE=1
+FREEZE=0 # gel des processus Linux de l'hôte : sur demande seulement (--freeze)
 ANDROID=1
 GPUMAX=""
 SIZE=""
@@ -69,7 +69,9 @@ Usage : waydroid-focus [options] <paquet|alias>
 
 Options :
   -n, --dry-run      affiche ce qui serait fait, sans rien modifier
-  --no-freeze        ne gèle pas les autres processus de l'hôte
+  --freeze           gèle aussi (SIGSTOP) les processus Linux de l'hôte qui utilisent
+                     le GPU ; sans cette option, seul le côté Waydroid est touché
+  --no-freeze        (par défaut) ne touche pas aux processus de l'hôte
   --no-android       ne touche pas aux réglages Android (animations, applis en cache)
   --gpu-max MHZ      plafonne la fréquence max du GPU pendant l'appli (ex. 500)
   --size LxH         change la résolution Android pendant l'appli (ex. 720x1560)
@@ -109,6 +111,7 @@ while (($#)); do
     exit 0
     ;;
   -n | --dry-run) DRY=1 ;;
+  --freeze) FREEZE=1 ;;
   --no-freeze) FREEZE=0 ;;
   --no-android) ANDROID=0 ;;
   --stop) STOP=1 ;;
