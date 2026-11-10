@@ -1,0 +1,5 @@
+src/
+pkg/
+waydroid-focus-src/
+*.pkg.tar.*
+*.log
